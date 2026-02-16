@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+AppDir/
+downloads/
+oldstuff/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+tests/
+docs/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+External?Libraries/
+Scratches?and?Consoles/
+
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment Variables
+.env
+
+# Logs
+logs/*.log
+*.log
+
+# Exports (generated files)
+exports/
+exports/*.xlsx
+exports/*.pdf
+exports/*.csv
+
+# Test Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Distribution / Packaging
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyInstaller
+*.manifest
+*.spec
+
+# --- Hibi-BuBe Spezialergänzungen ---
+
+# Binaries & Packaging
+*.AppImage
+*.zsync
+squashfs-root/
+releases/
+dist/
+build/
+*.spec
+
+# User Data & Jameica Integration (Sicherheit!)
+hibi-bube.db
+profiles/
+hibi-bube-jameica-plugin.zip
+
+# Byte-compiled / optimized / DLLs
+*.pyc
+*.pyo
+*.pyd
+
+# MyPy & Type Checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
