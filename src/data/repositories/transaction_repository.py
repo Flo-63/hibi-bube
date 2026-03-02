@@ -353,12 +353,17 @@ class TransactionRepository:
         :return: A `Transaction` object created from the data in the given row.
         :rtype: Transaction
         """
-        # WICHTIG: Hibiscus matcht gegen: empfaenger_name + empfaenger_name2 + zweck
-        # NICHT gegen zweck2!
-        purpose_orig = getattr(row, 'purpose', None)
-        purpose2_orig = getattr(row, 'purpose2', None)
-        counter_name = row.counter_account_name
-        counter_name2 = getattr(row, 'counter_account_name2', None)
+        # WICHTIG: H2 ignoriert SQL AS Aliase - nutze Original-Spaltennamen mit Fallback
+        # H2/JDBC gibt java.lang.String zurück, muss zu Python str konvertiert werden
+        def safe_str(value):
+            """Konvertiert Wert sicher zu Python string (auch java.lang.String für H2)"""
+            return str(value) if value is not None else None
+
+        # Hibiscus matcht gegen: empfaenger_name + empfaenger_name2 + zweck (NICHT zweck2!)
+        purpose_orig = safe_str(getattr(row, 'purpose', None) or getattr(row, 'zweck', None))
+        purpose2_orig = safe_str(getattr(row, 'purpose2', None) or getattr(row, 'zweck2', None))
+        counter_name = safe_str(getattr(row, 'counter_account_name', None) or getattr(row, 'empfaenger_name', None))
+        counter_name2 = safe_str(getattr(row, 'counter_account_name2', None) or getattr(row, 'empfaenger_name2', None))
 
         # Kombiniere für Pattern-Matching: empfaenger_name + empfaenger_name2 + zweck
         match_text_parts = []
@@ -371,11 +376,11 @@ class TransactionRepository:
 
         combined_purpose = ' '.join(match_text_parts) if match_text_parts else ''
 
-        # Datumsfelder: Mit Fallback für alte Queries die nur valuta haben
-        booking_date = getattr(row, 'booking_date', None)
-        value_date = getattr(row, 'value_date', None)
+        # Datumsfelder: Mit Fallback für Original-Spaltennamen
+        booking_date = getattr(row, 'booking_date', None) or getattr(row, 'datum', None)
+        value_date = getattr(row, 'value_date', None) or getattr(row, 'valuta', None)
 
-        # Fallback: Wenn neue Felder nicht vorhanden, nutze valuta für beide
+        # Fallback: Wenn beide None, nutze valuta für beide
         if booking_date is None and value_date is None:
             fallback_date = getattr(row, 'valuta', None)
             booking_date = fallback_date
@@ -385,22 +390,28 @@ class TransactionRepository:
         elif value_date is None:
             value_date = booking_date
 
+        # Betrag: Mit Fallback für beide Spaltennamen (MySQL: amount, H2: betrag)
+        # WICHTIG: Explizit auf None prüfen, nicht "or" verwenden (0 würde sonst als False gelten!)
+        amount_value = getattr(row, 'amount', None)
+        if amount_value is None:
+            amount_value = getattr(row, 'betrag', None)
+
         return Transaction(
             id=row.id,
-            account_id=row.account_id,
-            category_id=row.category_id,
-            amount=Decimal(str(row.amount)),
+            account_id=getattr(row, 'account_id', None) or getattr(row, 'konto_id', None),
+            category_id=getattr(row, 'category_id', None) or getattr(row, 'umsatztyp_id', None),
+            amount=Decimal(str(amount_value)),
             booking_date=booking_date,
             value_date=value_date,
             purpose=combined_purpose,  # Kombiniert für Pattern-Matching
-            counter_account_number=row.counter_account_number,
-            counter_account_blz=row.counter_account_blz,
-            counter_account_name=row.counter_account_name,
-            counter_account_name2=getattr(row, 'counter_account_name2', None),
-            category_name=getattr(row, 'category_name', None),
-            account_name=getattr(row, 'account_name', None),
-            account_kategorie=getattr(row, 'account_kategorie', None),
-            transaction_type=getattr(row, 'transaction_type', None),
+            counter_account_number=safe_str(getattr(row, 'counter_account_number', None) or getattr(row, 'empfaenger_konto', None)),
+            counter_account_blz=safe_str(getattr(row, 'counter_account_blz', None) or getattr(row, 'empfaenger_blz', None)),
+            counter_account_name=counter_name,
+            counter_account_name2=counter_name2,
+            category_name=safe_str(getattr(row, 'category_name', None) or getattr(row, 'name', None)),
+            account_name=safe_str(getattr(row, 'account_name', None) or getattr(row, 'bezeichnung', None)),
+            account_kategorie=safe_str(getattr(row, 'account_kategorie', None) or getattr(row, 'kategorie', None)),
+            transaction_type=safe_str(getattr(row, 'transaction_type', None) or getattr(row, 'art', None)),
             purpose_original=purpose_orig,  # Original zweck für Anzeige
             purpose2=purpose2_orig  # Original zweck2
         )

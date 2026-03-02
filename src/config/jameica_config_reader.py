@@ -33,7 +33,6 @@ class JameicaConfigReader:
     :type config_file: Path
     """
 
-    DEFAULT_CONFIG_DIR = Path.home() / ".jameica"
     CONFIG_FILENAME = "cfg/de.willuhn.jameica.hbci.rmi.HBCIDBService.properties"
 
     def __init__(self, config_dir: Optional[Path] = None):
@@ -41,11 +40,40 @@ class JameicaConfigReader:
         Initialize the Jameica configuration reader.
 
         :param config_dir: Optional custom path to Jameica config directory.
-            If not provided, defaults to ~/.jameica
+            If not provided, checks ~/.jameica.properties for 'dir=' parameter,
+            then falls back to ~/.jameica
         :type config_dir: Optional[Path]
         """
-        self.config_dir = config_dir or self.DEFAULT_CONFIG_DIR
+        self.config_dir = config_dir or self._get_jameica_workdir()
         self.config_file = self.config_dir / self.CONFIG_FILENAME
+
+    def _get_jameica_workdir(self) -> Path:
+        """
+        Determine the actual Jameica working directory.
+
+        Priority:
+        1. ~/.jameica.properties (dir=...)
+        2. Fallback to ~/.jameica
+
+        :return: Path to Jameica working directory
+        :rtype: Path
+        """
+        prop_file = Path.home() / ".jameica.properties"
+        if prop_file.exists():
+            try:
+                with open(prop_file, 'r') as f:
+                    for line in f:
+                        if line.startswith("dir="):
+                            dir_path = Path(line.strip().split("=", 1)[1])
+                            logger.info(f"Using Jameica workdir from .jameica.properties: {dir_path}")
+                            return dir_path
+            except Exception as e:
+                logger.warning(f"Could not read .jameica.properties: {e}")
+
+        # Fallback
+        default_path = Path.home() / ".jameica"
+        logger.debug(f"Using default Jameica workdir: {default_path}")
+        return default_path
 
     def exists(self) -> bool:
         """
@@ -117,12 +145,13 @@ class JameicaConfigReader:
                        config.get("database.driver.password", ""))
 
             if not jdbc_url:
-                logger.warning("No JDBC URL found in Jameica config")
+                logger.debug("No JDBC URL found in Jameica config (möglicherweise H2)")
                 return None
 
             # Support both MySQL and MariaDB
+            # Hinweis: H2 wird separat vom DatabaseManager behandelt
             if "mysql" not in jdbc_url.lower() and "mariadb" not in jdbc_url.lower():
-                logger.warning(f"Unsupported database type in JDBC URL: {jdbc_url}")
+                logger.debug(f"Non-MySQL database in JDBC URL (z.B. H2): {jdbc_url}")
                 return None
 
             # Parse JDBC URL: jdbc:mysql://host:port/database

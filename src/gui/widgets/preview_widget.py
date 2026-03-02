@@ -356,9 +356,26 @@ class PreviewWidget(QWidget):
         search_layout.addWidget(search_label)
 
         self.search_field = QLineEdit()
-        self.search_field.setPlaceholderText("Suche in allen angezeigten ?Feldern...")
+        self.search_field.setPlaceholderText("Suche in Transaktionsdaten...")
         self.search_field.textChanged.connect(self._on_search_text_changed)
         search_layout.addWidget(self.search_field)
+
+        # Filter-Modus Radio Buttons
+        from PyQt6.QtWidgets import QRadioButton, QButtonGroup
+        self.filter_mode_group = QButtonGroup()
+
+        self.filter_all_fields_radio = QRadioButton("Alle Felder")
+        self.filter_all_fields_radio.setChecked(True)
+        self.filter_all_fields_radio.setToolTip("Suche in allen Transaktionsfeldern")
+        self.filter_all_fields_radio.toggled.connect(self._on_filter_mode_changed)
+        self.filter_mode_group.addButton(self.filter_all_fields_radio)
+        search_layout.addWidget(self.filter_all_fields_radio)
+
+        self.filter_displayed_fields_radio = QRadioButton("Nur angezeigte Felder")
+        self.filter_displayed_fields_radio.setToolTip("Suche nur in aktuell angezeigten Spalten")
+        self.filter_displayed_fields_radio.toggled.connect(self._on_filter_mode_changed)
+        self.filter_mode_group.addButton(self.filter_displayed_fields_radio)
+        search_layout.addWidget(self.filter_displayed_fields_radio)
 
         layout.addLayout(search_layout)
 
@@ -742,8 +759,12 @@ class PreviewWidget(QWidget):
         # Iteriere über die aktuellen Header (in korrekter Reihenfolge!)
         # NICHT über config.fields, da wir die Reihenfolge angepasst haben
         headers = self._current_headers if self._current_headers else self.config.fields
-        for field in headers:
+        for idx, field in enumerate(headers):
             item = QStandardItem()
+
+            # WICHTIG: Speichere Transaction-ID in erstem Item für Suchfunktion
+            if idx == 0:
+                item.setData(trans.id, Qt.ItemDataRole.UserRole)
 
             if field == "Kategorie":
                 # Kategorie kann angezeigt werden oder leer sein bei Gruppierung
@@ -903,10 +924,17 @@ class PreviewWidget(QWidget):
         """
         self.tree_view.collapseAll()
 
+    def _on_filter_mode_changed(self):
+        """
+        Handle filter mode change - re-apply search filter with new mode.
+        """
+        # Re-trigger search with current text
+        self._on_search_text_changed(self.search_field.text())
+
     def _on_search_text_changed(self, search_text: str):
         """
         Filter tree view based on search text.
-        Searches in all text columns of the tree.
+        Searches either in all fields or only displayed fields based on radio button selection.
 
         :param search_text: The search query
         :return: None
@@ -918,6 +946,31 @@ class PreviewWidget(QWidget):
 
         search_text = search_text.lower()
 
+        # Determine which fields to search in
+        search_all_fields = self.filter_all_fields_radio.isChecked()
+
+        # Build a mapping: transaction ID -> whether it matches
+        # For "all fields" mode, we need to check the actual transaction data
+        transaction_matches_cache = {}
+
+        if search_all_fields:
+            # Pre-compute which transactions match by checking ALL their fields
+            for trans in self.transactions:
+                searchable_fields = [
+                    str(trans.booking_date),
+                    str(trans.value_date),
+                    str(trans.counter_account_number) if trans.counter_account_number else '',
+                    str(trans.counter_account_name) if trans.counter_account_name else '',
+                    str(trans.counter_account_blz) if trans.counter_account_blz else '',
+                    str(trans.purpose),
+                    str(trans.purpose_original) if trans.purpose_original else '',
+                    str(trans.amount),
+                    str(trans.account_name) if trans.account_name else '',
+                    str(trans.category_name) if trans.category_name else '',
+                ]
+                matches = any(search_text in field.lower() for field in searchable_fields)
+                transaction_matches_cache[trans.id] = matches
+
         # Hide items that don't match search
         def filter_item(item: QStandardItem, parent_visible: bool = False) -> bool:
             """
@@ -928,14 +981,49 @@ class PreviewWidget(QWidget):
             row = item.row()
             parent = item.parent() if item.parent() else self.model.invisibleRootItem()
 
-            # Search in all columns of this row
-            for col in range(self.model.columnCount()):
-                cell_item = parent.child(row, col)
-                if cell_item:
-                    text = cell_item.text().lower()
-                    if search_text in text:
-                        row_matches = True
-                        break
+            if search_all_fields:
+                # For "all fields" mode: check if this is a transaction row
+                # Get the first column item which has the transaction ID stored
+                first_col_item = parent.child(row, 0)
+                if first_col_item:
+                    trans_id = first_col_item.data(Qt.ItemDataRole.UserRole)
+                    if trans_id is not None and trans_id in transaction_matches_cache:
+                        # This is a transaction row - check if transaction matches
+                        row_matches = transaction_matches_cache[trans_id]
+                    else:
+                        # This is not a transaction row (e.g., category header)
+                        # Search in displayed text
+                        for col in range(self.model.columnCount()):
+                            cell_item = parent.child(row, col)
+                            if cell_item:
+                                text = cell_item.text().lower()
+                                if search_text in text:
+                                    row_matches = True
+                                    break
+            else:
+                # Search only in displayed/visible columns
+                # Get the visible column indices based on current headers
+                visible_columns = []
+                if self.config:
+                    for col in range(self.model.columnCount()):
+                        header_item = self.model.horizontalHeaderItem(col)
+                        if header_item:
+                            header_text = header_item.text()
+                            # Include column if it's in config.fields or it's the count column
+                            if header_text in self.config.fields or (self.config.show_count and header_text == "Anzahl"):
+                                visible_columns.append(col)
+                else:
+                    # Fallback: all columns are visible
+                    visible_columns = list(range(self.model.columnCount()))
+
+                # Search only in visible columns
+                for col in visible_columns:
+                    cell_item = parent.child(row, col)
+                    if cell_item:
+                        text = cell_item.text().lower()
+                        if search_text in text:
+                            row_matches = True
+                            break
 
             # Check children recursively
             has_matching_children = False
@@ -984,6 +1072,95 @@ class PreviewWidget(QWidget):
             item = root.child(i, 0)
             if item:
                 show_item_recursive(item)
+
+    def get_filtered_transactions(self):
+        """
+        Get only the visible/filtered transactions based on the current search filter.
+
+        :return: List of transactions that are currently visible in the tree view
+        :rtype: list
+        """
+        if not hasattr(self, 'transactions') or not self.transactions:
+            return []
+
+        # Wenn kein Suchtext, gebe alle Transaktionen zurück
+        if not hasattr(self, 'search_field') or not self.search_field.text():
+            return self.transactions
+
+        # Filtere Transaktionen basierend auf dem Suchtext und Filter-Modus
+        search_text = self.search_field.text().lower()
+        search_all_fields = self.filter_all_fields_radio.isChecked()
+        filtered_transactions = []
+
+        def matches_search(transaction) -> bool:
+            """Prüft ob eine Transaktion dem Suchtext entspricht"""
+            if search_all_fields:
+                # Durchsuche alle relevanten Felder der Transaktion
+                searchable_fields = [
+                    str(transaction.booking_date),
+                    str(transaction.value_date),
+                    str(transaction.counter_account_number) if transaction.counter_account_number else '',
+                    str(transaction.counter_account_name) if transaction.counter_account_name else '',
+                    str(transaction.counter_account_blz) if transaction.counter_account_blz else '',
+                    str(transaction.purpose),
+                    str(transaction.purpose_original) if transaction.purpose_original else '',
+                    str(transaction.amount),
+                    str(transaction.account_name) if transaction.account_name else '',
+                    str(transaction.category_name) if transaction.category_name else '',
+                ]
+            else:
+                # Durchsuche nur angezeigte Felder basierend auf config.fields
+                searchable_fields = []
+                if self.config:
+                    for field in self.config.fields:
+                        if field == "Datum":
+                            from src.data.models.domain_models import DateFieldType
+                            if self.config.date_range.date_field == DateFieldType.BOOKING_DATE:
+                                searchable_fields.append(str(transaction.booking_date))
+                            else:
+                                searchable_fields.append(str(transaction.value_date))
+                        elif field == "Betrag":
+                            searchable_fields.append(str(transaction.amount))
+                        elif field == "Verwendungszweck":
+                            searchable_fields.append(str(transaction.purpose_original) if transaction.purpose_original else '')
+                        elif field == "Gegenkonto":
+                            searchable_fields.append(str(transaction.counter_account_name) if transaction.counter_account_name else '')
+                        elif field == "Kontonummer":
+                            searchable_fields.append(str(transaction.counter_account_number) if transaction.counter_account_number else '')
+                        elif field == "BLZ":
+                            searchable_fields.append(str(transaction.counter_account_blz) if transaction.counter_account_blz else '')
+                        elif field == "Konto":
+                            searchable_fields.append(str(transaction.account_name) if transaction.account_name else '')
+                        elif field == "Kategorie":
+                            searchable_fields.append(str(transaction.category_name) if transaction.category_name else '')
+                        elif field == "Buchungsdatum":
+                            searchable_fields.append(str(transaction.booking_date))
+                        elif field == "Valuta":
+                            searchable_fields.append(str(transaction.value_date))
+
+                    # Anzahl-Spalte wird hier nicht durchsucht (ist ja nur "1" pro Transaktion)
+                else:
+                    # Fallback wenn keine Config vorhanden
+                    searchable_fields = [
+                        str(transaction.booking_date),
+                        str(transaction.value_date),
+                        str(transaction.purpose),
+                        str(transaction.amount),
+                        str(transaction.category_name) if transaction.category_name else '',
+                    ]
+
+            # Prüfe ob Suchtext in irgendeinem Feld vorkommt
+            for field in searchable_fields:
+                if search_text in field.lower():
+                    return True
+            return False
+
+        # Filtere Transaktionen basierend auf Suchtext
+        for transaction in self.transactions:
+            if matches_search(transaction):
+                filtered_transactions.append(transaction)
+
+        return filtered_transactions
 
     def _apply_header_alignment(self):
         """

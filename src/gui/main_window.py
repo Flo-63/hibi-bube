@@ -1789,9 +1789,11 @@ class MainWindow(QMainWindow):
         # Validierung
         is_valid, error = config.validate()
 
-        # Status-Update
-        msg = f"Konten: {len(config.account_ids)}, Kategorien: {len(config.category_ids)}, "
-        msg += f"Felder: {len(config.fields)}, Gruppierung: {len(config.grouping)}"
+        # Status-Update (mit Fallback für None-Werte)
+        msg = f"Konten: {len(config.account_ids) if config.account_ids else 0}, "
+        msg += f"Kategorien: {len(config.category_ids) if config.category_ids else 0}, "
+        msg += f"Felder: {len(config.fields) if config.fields else 0}, "
+        msg += f"Gruppierung: {len(config.grouping) if config.grouping else 0}"
 
         if not is_valid:
             msg += f" | ⚠ {error}"
@@ -1893,13 +1895,41 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Öffne PrintPreviewDialog
+        # Öffne PrintPreviewDialog mit gefilterten Transaktionen
         from src.gui.dialogs.print_preview_dialog import PrintPreviewDialog
+
+        # Hole nur die sichtbaren/gefilterten Transaktionen
+        filtered_transactions = self.preview_widget.get_filtered_transactions()
+
+        # Debug-Info
+        total_count = len(self.preview_widget.transactions)
+        filtered_count = len(filtered_transactions)
+        search_text = self.preview_widget.search_field.text() if hasattr(self.preview_widget, 'search_field') else ""
+        print(f"DEBUG: Total transactions: {total_count}, Filtered: {filtered_count}, Search: '{search_text}'")
+
+        # Wenn gefiltert wurde, baue einen neuen Tree nur mit gefilterten Transaktionen
+        # Ansonsten verwende den bestehenden Tree
+        tree_to_use = None
+        if filtered_count < total_count and self.preview_widget.tree:
+            # Filter ist aktiv - baue neuen Tree nur mit gefilterten Transaktionen
+            from src.business.services.hierarchy_builder import HierarchyBuilder
+            builder = HierarchyBuilder()
+
+            # Hole alle Kategorien
+            categories = self._get_all_categories()
+
+            # Baue Tree neu mit gefilterten Transaktionen
+            tree_to_use = builder.build_tree(categories)
+            tree_to_use = builder.assign_transactions(tree_to_use, filtered_transactions, categories)
+            tree_to_use = builder.calculate_aggregates(tree_to_use, filtered_transactions)
+        else:
+            # Kein Filter aktiv - verwende bestehenden Tree
+            tree_to_use = self.preview_widget.tree
 
         dialog = PrintPreviewDialog(
             config=self.preview_widget.config,
-            transactions=self.preview_widget.transactions,
-            tree=self.preview_widget.tree,
+            transactions=filtered_transactions,
+            tree=tree_to_use,
             headers=self.preview_widget.get_headers(),
             column_order=self.preview_widget.get_column_order(),
             column_widths=self.preview_widget.get_column_widths(),
@@ -1916,6 +1946,18 @@ class MainWindow(QMainWindow):
                 # Speichere Einstellungen in PreviewWidget für nächsten Aufruf
                 self.preview_widget._saved_column_order = column_order
                 self.preview_widget._saved_column_widths = column_widths
+
+    def _get_all_categories(self):
+        """
+        Hole alle Kategorien aus der Datenbank.
+
+        :return: Liste aller Kategorien
+        """
+        try:
+            return self.db.categories.get_all()
+        except Exception as e:
+            print(f"Fehler beim Laden der Kategorien: {e}")
+            return []
 
     def _refresh_preview(self):
         """

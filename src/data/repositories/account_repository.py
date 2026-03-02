@@ -195,10 +195,12 @@ class AccountRepository:
         :return: An Account instance created with values from the provided row object.
         :rtype: Account
         """
+        # WICHTIG: H2 ignoriert SQL AS Aliase, nutze Original-Spaltennamen
+        # Versuche zuerst Aliase (SQLAlchemy), dann Original-Namen (H2)
         return Account(
             id=row.id,
-            account_number=row.account_number or '',
-            name=row.name or '',
+            account_number=getattr(row, 'account_number', None) or getattr(row, 'kontonummer', '') or '',
+            name=getattr(row, 'name', None) or getattr(row, 'bezeichnung', '') or '',
             blz=row.blz,
             iban=row.iban,
             bic=row.bic,

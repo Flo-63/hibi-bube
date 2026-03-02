@@ -165,30 +165,33 @@ def main():
     print()
 
     # Show configuration source
-    config_path = args.d if args.d else Path.home() / ".jameica"
-    
     if settings.db.source == 'jameica':
-        print(f"📁 Konfiguration: Jameica ({config_path})")
+        print(f"📁 Konfiguration: Jameica MySQL ({settings.db.host})")
+    elif settings.db.source == 'jameica-h2':
+        print(f"📁 Konfiguration: Jameica H2")
+        print(f"💾 Datenbank: H2 (verschlüsselt)")
     elif settings.db.source == 'env':
         print(f"📁 Konfiguration: .env Datei")
     else:
         print(f"📁 Konfiguration: Standard-Werte")
-        
+
     # Prüfe ob Jameica-Modus aber keine Config gefunden
     if not args.env and settings.db.source == 'default':
         from PyQt6.QtWidgets import QMessageBox
+        from src.config.jameica_config_reader import JameicaConfigReader
         app_temp = QApplication(sys.argv)
-        
-        config_file_path = config_path / 'cfg/de.willuhn.jameica.hbci.rmi.HBCIDBService.properties'
-        
+
+        reader = JameicaConfigReader(args.d)
+        config_file_path = reader.config_file
+
         QMessageBox.critical(
             None,
             "Keine Jameica-Konfiguration gefunden",
-            "<h3>MySQL-Konfiguration fehlt</h3>"
-            "<p>Es wurde keine MySQL-Konfiguration in Jameica gefunden.</p>"
+            "<h3>Datenbank-Konfiguration fehlt</h3>"
+            "<p>Es wurde keine Datenbank-Konfiguration in Jameica gefunden.</p>"
             "<p><b>Mögliche Lösungen:</b></p>"
             "<ul>"
-            "<li>Stellen Sie sicher, dass Hibiscus mit MySQL konfiguriert ist</li>"
+            "<li>Stellen Sie sicher, dass Hibiscus mit MySQL oder H2 konfiguriert ist</li>"
             "<li>Verwenden Sie eine .env Datei mit <code>--env</code></li>"
             "<li>Geben Sie ein alternatives Jameica-Verzeichnis mit <code>--d PFAD</code> an</li>"
             "</ul>"
@@ -197,45 +200,80 @@ def main():
         )
         return 1
 
-    print(f"🔗 Verbinde mit Datenbank: {settings.db.host}:{settings.db.port}/{settings.db.database}")
+    # Zeige DB-Info nur für MySQL (H2-Pfad ist intern)
+    if settings.db.source != 'jameica-h2':
+        print(f"🔗 Verbinde mit Datenbank: {settings.db.host}:{settings.db.port}/{settings.db.database}")
 
-    # 1. Verbindung zur DB herstellen
-    try:
-        db = DatabaseManager()
-        if not db.test_connection():
-            print("❌ Datenbankverbindung fehlgeschlagen!")
-            if settings.db.source == 'jameica':
-                print("Bitte prüfen Sie die Jameica-Konfiguration!")
-            elif settings.db.source == 'env':
-                print("Bitte prüfen Sie die .env Datei!")
-            else:
-                print("Bitte konfigurieren Sie die Datenbankverbindung!")
-            return 1
-        print("✅ Datenbankverbindung erfolgreich")
-    except Exception as e:
-        print(f"❌ Fehler beim Erstellen der DB-Verbindung: {e}")
-        if settings.db.source == 'jameica':
-            print("Bitte prüfen Sie die Jameica-Konfiguration!")
-        elif settings.db.source == 'env':
-            print("Bitte prüfen Sie die .env Datei!")
-        else:
-            print("Bitte konfigurieren Sie die Datenbankverbindung!")
-        return 1
+    # Für H2: Info ausgeben (Passwort wird per GUI-Dialog abgefragt)
+    if settings.db.source == 'jameica-h2':
+        print()
+        print("⚠️  WARNUNG: H2-Verschlüsselung hat experimentelle Unterstützung!")
+        print("    Die Passwort-Entschlüsselung ist noch nicht vollständig implementiert.")
+        print("    Siehe JAMEICA_H2_ENCRYPTION.md für Details.")
+        print()
+        print("🔐 H2-Datenbank ist verschlüsselt.")
+        print("    Das Passwort wird in einem Dialog abgefragt.")
+        print()
 
-    # 2. Kategorien laden (Test)
-    try:
-        categories = db.categories.get_all()
-        print(f"✅ {len(categories)} Kategorien geladen")
-    except Exception as e:
-        print(f"❌ Fehler beim Laden der Kategorien: {e}")
-        return 1
+        # Debug: Log-Level auf DEBUG setzen für detailliertere Fehler
+        if settings.app.log_level == 'ERROR':
+            logging.getLogger('src.data.h2_adapter').setLevel(logging.DEBUG)
 
     print()
     print("Starte GUI...")
     print()
 
-    # 3. PyQt6 Application erstellen
+    # 1. PyQt6 Application ZUERST erstellen (vor DatabaseManager!)
     app = QApplication(sys.argv)
+    app.setApplicationName("Hibi-BuBe Report Generator")
+    app.setOrganizationName("Hibi-BuBe")
+
+    # 2. Verbindung zur DB herstellen (NACH QApplication, damit Dialog funktioniert)
+    try:
+        db = DatabaseManager()
+        if not db.test_connection():
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                None,
+                "Datenbankverbindung fehlgeschlagen",
+                "❌ Datenbankverbindung fehlgeschlagen!\n\n"
+                "Bitte prüfen Sie die Konfiguration."
+            )
+            return 1
+        print("✅ Datenbankverbindung erfolgreich")
+    except Exception as e:
+        from PyQt6.QtWidgets import QMessageBox
+        print(f"❌ Fehler beim Erstellen der DB-Verbindung: {e}")
+
+        error_msg = f"❌ Fehler beim Erstellen der DB-Verbindung:\n\n{e}"
+        if settings.db.source == 'jameica-h2':
+            error_msg += (
+                "\n\n⚠️  H2-Verschlüsselung: Passwort-Entschlüsselung fehlgeschlagen!"
+                "\nDie Passwort-Ableitung ist noch nicht vollständig implementiert."
+                "\n\n💡 Nächste Schritte:"
+                "\n   1. Siehe JAMEICA_H2_ENCRYPTION.md für Details"
+                "\n   2. Alternative: Migrieren Sie auf MySQL/MariaDB in Jameica"
+            )
+
+        QMessageBox.critical(None, "Datenbankfehler", error_msg)
+        return 1
+
+    # 3. Kategorien laden (Test)
+    try:
+        categories = db.categories.get_all()
+        print(f"✅ {len(categories)} Kategorien geladen")
+    except Exception as e:
+        from PyQt6.QtWidgets import QMessageBox
+        print(f"❌ Fehler beim Laden der Kategorien: {e}")
+        QMessageBox.critical(
+            None,
+            "Fehler beim Laden der Kategorien",
+            f"❌ Fehler beim Laden der Kategorien:\n\n{e}"
+        )
+        return 1
+
+    # 4. MainWindow erstellen und anzeigen
+    window = MainWindow(db)
     app.setApplicationName("Hibi-BuBe Report Generator")
     app.setOrganizationName("Hibi-BuBe")
 

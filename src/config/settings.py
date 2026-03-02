@@ -70,11 +70,28 @@ def get_config_dir() -> Path:
     """
     Get the configuration directory based on CLI options.
 
+    Priority:
+    1. CLI option (--d)
+    2. ~/.jameica.properties (dir=...)
+    3. Fallback to ~/.jameica
+
     :return: Path to configuration directory
     :rtype: Path
     """
     if _cli_config_dir:
         return _cli_config_dir
+
+    # Check ~/.jameica.properties for custom directory
+    prop_file = Path.home() / ".jameica.properties"
+    if prop_file.exists():
+        try:
+            with open(prop_file, 'r') as f:
+                for line in f:
+                    if line.startswith("dir="):
+                        return Path(line.strip().split("=", 1)[1])
+        except Exception:
+            pass  # Fallback to default
+
     return Path.home() / ".jameica"
 
 
@@ -167,33 +184,27 @@ class DatabaseConfig:
         """
         Initializes the configuration for a database connection.
 
-        Configuration priority:
+        Configuration priority when --env flag is SET:
+        1. Environment variables (.env file) - HIGHEST PRIORITY
+
+        Configuration priority when --env flag is NOT set:
         1. Jameica properties file (~/.jameica/cfg/... or custom --d path)
-        2. Environment variables (only when --env flag is set)
-        3. Default values
+        2. Default values
 
         The configuration source is tracked in the 'source' attribute.
+
+        NOTE: For H2 databases, the DatabaseManager handles the connection directly.
+        This class only provides MySQL connection strings as fallback.
         """
         from src.config.jameica_config_reader import JameicaConfigReader
 
-        # Try Jameica configuration first (PRIMARY)
-        jameica_config = None
+        # Check if Jameica is configured with H2 (not MySQL)
         config_dir = get_config_dir()
-        reader = JameicaConfigReader(config_dir)
+        self._is_h2 = self._check_if_h2(config_dir)
 
-        if reader.exists():
-            jameica_config = reader.read_db_config()
-
-        if jameica_config:
-            # Use Jameica configuration
-            self.user = jameica_config['user']
-            self.password = jameica_config['password']
-            self.host = jameica_config['host']
-            self.port = jameica_config['port']
-            self.database = jameica_config['database']
-            self.source = 'jameica'
-        elif _cli_use_env:
-            # Use environment variables (only if --env flag is set)
+        # If --env flag is set, use environment variables FIRST (override Jameica)
+        if _cli_use_env:
+            # Use environment variables - HIGHEST PRIORITY when --env is set
             self.user = os.getenv("DB_USER", "hibiscus_user")
             self.password = os.getenv("DB_PASSWORD", "")
             self.host = os.getenv("DB_HOST", "localhost")
@@ -201,13 +212,61 @@ class DatabaseConfig:
             self.database = os.getenv("DB_NAME", "hibiscus")
             self.source = 'env'
         else:
-            # Default values (fallback)
-            self.user = "hibiscus_user"
-            self.password = ""
-            self.host = "localhost"
-            self.port = "3306"
-            self.database = "hibiscus"
-            self.source = 'default'
+            # Try Jameica configuration (PRIMARY when --env is NOT set)
+            jameica_config = None
+            reader = JameicaConfigReader(config_dir)
+
+            if reader.exists():
+                jameica_config = reader.read_db_config()
+
+            if jameica_config:
+                # Use Jameica MySQL configuration
+                self.user = jameica_config['user']
+                self.password = jameica_config['password']
+                self.host = jameica_config['host']
+                self.port = jameica_config['port']
+                self.database = jameica_config['database']
+                self.source = 'jameica'
+            elif self._is_h2:
+                # H2 database detected - DatabaseManager will handle it
+                self.user = "hibiscus"
+                self.password = ""  # Will be read by DatabaseManager
+                self.host = "localhost"
+                self.port = "0"
+                self.database = "h2"
+                self.source = 'jameica-h2'
+            else:
+                # Default values (fallback)
+                self.user = "hibiscus_user"
+                self.password = ""
+                self.host = "localhost"
+                self.port = "3306"
+                self.database = "hibiscus"
+                self.source = 'default'
+
+    def _check_if_h2(self, config_dir: Path) -> bool:
+        """
+        Prüft, ob Jameica mit H2 konfiguriert ist.
+
+        :param config_dir: Jameica-Konfigurationsverzeichnis
+        :return: True wenn H2 konfiguriert ist
+        """
+        config_file = config_dir / "cfg/de.willuhn.jameica.hbci.rmi.HBCIDBService.properties"
+        if not config_file.exists():
+            return False
+
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    # Prüfe auf H2 JDBC URL (mit und ohne Escaping)
+                    if 'database.driver.url' in line and ('jdbc:h2:' in line or 'jdbc\\:h2\\:' in line):
+                        return True
+                    # Prüfe auf H2-spezifische Properties (verschlüsseltes Passwort)
+                    if 'database.driver.h2.encryption' in line:
+                        return True
+        except Exception:
+            pass
+        return False
 
     @property
     def connection_string(self) -> str:
@@ -363,10 +422,18 @@ class Settings:
         database password and user are properly set. This method raises an exception
         if either credential is missing.
 
+        NOTE: For H2 databases (source='jameica-h2'), the password validation is skipped
+        as the DatabaseManager handles H2 authentication directly.
+
         :raises ValueError: If the database password or user is not set.
         :return: A boolean value indicating successful validation.
         :rtype: bool
         """
+        # H2 database: Password wird vom DatabaseManager direkt aus Jameica-Config gelesen
+        if self.db.source == 'jameica-h2':
+            return True
+
+        # MySQL/MariaDB: Password erforderlich
         if not self.db.password:
             if self.db.source == 'jameica':
                 raise ValueError("Jameica-Konfiguration unvollständig: DB_PASSWORD fehlt!")
